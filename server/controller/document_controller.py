@@ -1,14 +1,15 @@
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException, Depends
 from fastapi.responses import JSONResponse
-from typing import Optional
+from typing import Optional, Dict, Any
 from service.document_service import DocumentService
+import io
+import PyPDF2
 
 router = APIRouter(prefix="/api/documents", tags=["documents"])
 
-
+# Dependency to get document service
 def get_document_service() -> DocumentService:
     return DocumentService()
-
 
 @router.post("/upload")
 async def upload_document(
@@ -20,7 +21,7 @@ async def upload_document(
     """
     Upload and process a document
 
-    - **file**: The document file to upload
+    - **file**: The document file to upload (supports .txt and .pdf files)
     - **description**: Optional description of the document
     - **tags**: Optional comma-separated tags
     """
@@ -31,21 +32,47 @@ async def upload_document(
 
         # Read file content
         content = await file.read()
-
-        # Try to decode as text (for text files)
-        try:
-            file_content = content.decode('utf-8')
-        except UnicodeDecodeError:
+        
+        # Extract text based on file type
+        file_content = ""
+        if file.filename.lower().endswith('.pdf'):
+            # Handle PDF files
+            try:
+                pdf_reader = PyPDF2.PdfReader(io.BytesIO(content))
+                for page in pdf_reader.pages:
+                    file_content += page.extract_text() + "\n"
+                
+                if not file_content.strip():
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Could not extract text from PDF. The file might be scanned or image-based."
+                    )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Error processing PDF file: {str(e)}"
+                )
+        elif file.filename.lower().endswith('.txt'):
+            # Handle text files
+            try:
+                file_content = content.decode('utf-8')
+            except UnicodeDecodeError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Text file must be UTF-8 encoded"
+                )
+        else:
             raise HTTPException(
                 status_code=400,
-                detail="File must be a text file (PDF, DOCX, etc. not supported yet)"
+                detail="Unsupported file type. Please upload .txt or .pdf files only."
             )
 
         # Prepare metadata
         metadata = {
             "description": description,
             "file_size": len(content),
-            "content_type": file.content_type
+            "content_type": file.content_type,
+            "file_type": file.filename.split('.')[-1].lower()
         }
 
         if tags:

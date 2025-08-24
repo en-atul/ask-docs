@@ -1,7 +1,7 @@
 import os
 import chromadb
-from langchain_community.vectorstores import Chroma
-from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -11,7 +11,7 @@ load_dotenv()
 # Use localhost for local development
 # Default to "localhost" if not set
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = os.getenv("CHROMA_PORT", "8001")  # Default Chroma port is 8000
+CHROMA_PORT = os.getenv("CHROMA_PORT", "8001")  # Default Chroma port is 8001
 
 # Initialize embeddings with error handling
 
@@ -36,9 +36,10 @@ def get_client():
     global _client
     if _client is None:
         try:
+            # Use the newer client initialization without tenant/database
             _client = chromadb.HttpClient(
                 host=CHROMA_HOST,
-                port=CHROMA_PORT
+                port=int(CHROMA_PORT) # Ensure port is int
             )
         except Exception as e:
             raise ConnectionError(

@@ -4,7 +4,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import LLMChainExtractor
-from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from config.chroma import get_vectorstore
 import uuid
 
