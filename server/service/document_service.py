@@ -1,12 +1,14 @@
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, AsyncGenerator
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.schema import Document
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import LLMChainExtractor
-from langchain_openai import ChatOpenAI
-from config.chroma import get_vectorstore
+from langchain_community.chat_models import ChatOpenAI
+from config.chroma import get_vectorstore, get_client
 import uuid
+import json
+import asyncio
 
 
 class DocumentService:
@@ -23,7 +25,6 @@ class DocumentService:
             temperature=0.1
         )
 
-        # Initialize contextual compression retriever (for handling duplicate results)
         self.compressor = LLMChainExtractor.from_llm(self.llm)
         self.compression_retriever = ContextualCompressionRetriever(
             base_retriever=self.vectorstore.as_retriever(),
@@ -46,7 +47,6 @@ class DocumentService:
                 }
             )
 
-            # Split document into chunks
             chunks = self.text_splitter.split_documents([doc])
 
             texts = [chunk.page_content for chunk in chunks]
@@ -128,12 +128,12 @@ class DocumentService:
             # Create prompt for OpenAI
             prompt = f"""
             Based on the following context, provide a clear and comprehensive answer to the question.
-            
+
             Question: {query}
-            
+
             Context:
             {context}
-            
+
             Please provide a well-structured answer that directly addresses the question using the information from the context.
             """
 
@@ -208,14 +208,117 @@ class DocumentService:
                 "message": "Failed to search documents"
             }
 
+    async def search_documents_stream(self, query: str, k: int = 5, document_id: Optional[str] = None) -> AsyncGenerator[str, None]:
+        """
+        Streaming version of search_documents that yields events as the process progresses
+        """
+        try:
+            # Send start event
+            yield json.dumps({
+                "event": "start",
+                "query": query,
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+            results = []
+            search_type = "global"
+
+            # 1. Search specific document first (if document_id provided)
+            if document_id:
+                yield json.dumps({
+                    "event": "searching_document",
+                    "document_id": document_id,
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+
+                doc_results = self.search_specific_document(
+                    query, document_id, k)
+                if doc_results:
+                    results = doc_results
+                    search_type = "document_specific"
+
+                    yield json.dumps({
+                        "event": "document_search_complete",
+                        "results_count": len(results),
+                        "timestamp": asyncio.get_event_loop().time()
+                    })
+
+            # 2. If no results from specific document, search globally
+            if not results:
+                yield json.dumps({
+                    "event": "searching_global",
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+
+                global_results = self.search_all_documents(query, k)
+                results = global_results
+                search_type = "global"
+
+                yield json.dumps({
+                    "event": "global_search_complete",
+                    "results_count": len(results),
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+
+            if not results:
+                yield json.dumps({
+                    "event": "no_results",
+                    "message": "No relevant information found in the documents.",
+                    "timestamp": asyncio.get_event_loop().time()
+                })
+                return
+
+            # 3. Sanitize results using contextual compression
+            yield json.dumps({
+                "event": "sanitizing_results",
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+            sanitized_results = self.sanitize_results(results, query)
+
+            yield json.dumps({
+                "event": "sanitization_complete",
+                "original_count": len(results),
+                "sanitized_count": len(sanitized_results),
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+            # 4. Format answer using OpenAI
+            yield json.dumps({
+                "event": "generating_answer",
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+            formatted_answer = await self.format_with_openai(query, sanitized_results)
+
+            yield json.dumps({
+                "event": "answer_complete",
+                "answer": formatted_answer,
+                "search_type": search_type,
+                "total_results": len(sanitized_results),
+                "sources": list(set([doc.metadata.get("filename", "Unknown") for doc in sanitized_results])),
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+            # 5. Send completion event
+            yield json.dumps({
+                "event": "complete",
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
+        except Exception as e:
+            yield json.dumps({
+                "event": "error",
+                "error": str(e),
+                "timestamp": asyncio.get_event_loop().time()
+            })
+
     async def get_document_stats(self) -> Dict[str, Any]:
         """
         Get statistics about stored documents
         """
         try:
             # Get document count using the underlying ChromaDB client
-            from config.chroma import get_client
-
             client = get_client()
             collection = client.get_collection(name="documents")
             count = collection.count()
